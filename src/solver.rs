@@ -71,7 +71,7 @@ use crate::error::PubGrubError;
 use crate::internal::core::State;
 use crate::internal::incompatibility::Incompatibility;
 use crate::package::Package;
-use crate::type_aliases::{DependencyConstraints, Map, SelectedDependencies};
+use crate::type_aliases::{Map, SelectedDependencies};
 use crate::version_set::VersionSet;
 use log::{debug, info};
 
@@ -141,35 +141,27 @@ pub fn resolve<DP: DependencyProvider>(
         if is_new_dependency {
             // Retrieve that package dependencies.
             let p = &next;
-            let dependencies = dependency_provider.get_dependencies(p, &v).map_err(|err| {
-                PubGrubError::ErrorRetrievingDependencies {
+            let start_range = state.incompatibility_store.start_range();
+
+            let mut dependency_adder = DependencyAdder {
+                state: &mut state,
+                package: p,
+                version: &v,
+                err: None,
+            };
+            dependency_provider
+                .get_dependencies(p, &v, &mut dependency_adder)
+                .map_err(|err| PubGrubError::ErrorRetrievingDependencies {
                     package: p.clone(),
                     version: v.clone(),
                     source: err,
-                }
-            })?;
+                })?;
 
-            let dependencies = match dependencies {
-                Dependencies::Unavailable(reason) => {
-                    state.add_incompatibility(Incompatibility::custom_version(
-                        p.clone(),
-                        v.clone(),
-                        reason,
-                    ));
-                    continue;
-                }
-                Dependencies::Available(x) if x.contains_key(p) => {
-                    return Err(PubGrubError::SelfDependency {
-                        package: p.clone(),
-                        version: v,
-                    });
-                }
-                Dependencies::Available(x) => x,
-            };
+            if let Some(err) = dependency_adder.err {
+                return Err(err);
+            }
 
-            // Add that package and version if the dependencies are not problematic.
-            let dep_incompats =
-                state.add_incompatibility_from_dependencies(p.clone(), v.clone(), &dependencies);
+            let dep_incompats = state.incompatibility_store.make_range(start_range);
 
             state.partial_solution.add_version(
                 p.clone(),
@@ -186,14 +178,111 @@ pub fn resolve<DP: DependencyProvider>(
     }
 }
 
-/// An enum used by [DependencyProvider] that holds information about package dependencies.
-/// For each [Package] there is a set of versions allowed as a dependency.
-#[derive(Clone)]
-pub enum Dependencies<P: Package, VS: VersionSet, M: Eq + Clone + Debug + Display> {
-    /// Package dependencies are unavailable with the reason why they are missing.
-    Unavailable(M),
-    /// Container for all available package versions.
-    Available(DependencyConstraints<P, VS>),
+// Maybe this trait should actually be made sealed.
+pub trait DependencyVisitor<P, VS: VersionSet, M> {
+    fn add_dependency(&mut self, dependency: P, requerment: VS);
+
+    fn make_unavailable_reason(&mut self, reason: M);
+
+    fn make_unavailable(&mut self)
+    where
+        M: Default,
+    {
+        self.make_unavailable_reason(M::default());
+    }
+
+    fn add_iter_dependencies(&mut self, deps: impl IntoIterator<Item = (P, VS)>) {
+        for dep in deps {
+            self.add_dependency(dep.0, dep.1);
+        }
+    }
+
+    // Notice that we could add other kinds of dependency edges here without breaking compatibility.
+}
+
+struct DependencyAdder<'c, DP: DependencyProvider> {
+    state: &'c mut State<DP>,
+    package: &'c DP::P,
+    version: &'c DP::V,
+    err: Option<PubGrubError<DP>>,
+}
+impl<'c, DP: DependencyProvider> DependencyVisitor<DP::P, DP::VS, DP::M>
+    for DependencyAdder<'c, DP>
+{
+    fn add_dependency(&mut self, dependency: DP::P, requerment: DP::VS) {
+        if self.package == &dependency {
+            self.err = Some(PubGrubError::SelfDependency {
+                package: self.package.clone(),
+                version: self.version.clone(),
+            });
+            return;
+        }
+
+        self.state.add_incompatibility_from_dependency(
+            self.package.clone(),
+            self.version.clone(),
+            dependency,
+            requerment,
+        );
+    }
+
+    fn make_unavailable_reason(&mut self, reason: DP::M) {
+        self.state
+            .add_incompatibility(Incompatibility::custom_version(
+                self.package.clone(),
+                self.version.clone(),
+                reason,
+            ));
+    }
+}
+
+/// This implementation is only useful if you want to introspect what a call to `get_dependencies`
+/// did (for testing) or store what a call to `get_dependencies` did for replaying later (for caching).
+pub struct DependencyCollector<DP: DependencyProvider> {
+    #[allow(clippy::type_complexity)]
+    state: Result<Vec<(DP::P, DP::VS)>, DP::M>,
+}
+
+impl<DP: DependencyProvider> Default for DependencyCollector<DP> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<DP: DependencyProvider> DependencyCollector<DP> {
+    pub fn new() -> Self {
+        Self {
+            state: Ok(Vec::new()),
+        }
+    }
+    /// Returns a list of all normal dependencies added or the reason if it was ever made unavailable.
+    #[allow(clippy::type_complexity)]
+    pub fn collect(self) -> Result<Vec<(DP::P, DP::VS)>, DP::M> {
+        self.state
+    }
+    pub fn replay<DV: DependencyVisitor<DP::P, DP::VS, DP::M>>(&self, other: &mut DV) {
+        match self.state.as_ref() {
+            Ok(deps) => {
+                for (dep, range) in deps {
+                    other.add_dependency(dep.clone(), range.clone());
+                }
+            }
+            Err(reason) => other.make_unavailable_reason(reason.clone()),
+        }
+    }
+}
+
+impl<DP: DependencyProvider> DependencyVisitor<DP::P, DP::VS, DP::M> for DependencyCollector<DP> {
+    fn add_dependency(&mut self, dependency: DP::P, requerment: DP::VS) {
+        let Ok(state) = &mut self.state else {
+            return;
+        };
+        state.push((dependency, requerment));
+    }
+
+    fn make_unavailable_reason(&mut self, reason: DP::M) {
+        self.state = Err(reason);
+    }
 }
 
 /// Trait that allows the algorithm to retrieve available packages and their dependencies.
@@ -275,12 +364,13 @@ pub trait DependencyProvider {
 
     /// Retrieves the package dependencies.
     /// Return [Dependencies::Unavailable] if its dependencies are unavailable.
-    #[allow(clippy::type_complexity)]
-    fn get_dependencies(
+
+    fn get_dependencies<DV: DependencyVisitor<Self::P, Self::VS, Self::M>>(
         &self,
         package: &Self::P,
         version: &Self::V,
-    ) -> Result<Dependencies<Self::P, Self::VS, Self::M>, Self::Err>;
+        dependency_adder: &mut DV,
+    ) -> Result<(), Self::Err>;
 
     /// This is called fairly regularly during the resolution,
     /// if it returns an Err then resolution will be terminated.
@@ -304,7 +394,7 @@ pub trait DependencyProvider {
 )]
 #[cfg_attr(feature = "serde", serde(transparent))]
 pub struct OfflineDependencyProvider<P: Package, VS: VersionSet> {
-    dependencies: Map<P, BTreeMap<VS::V, DependencyConstraints<P, VS>>>,
+    dependencies: Map<P, BTreeMap<VS::V, Map<P, VS>>>,
 }
 
 impl<P: Package, VS: VersionSet> OfflineDependencyProvider<P, VS> {
@@ -354,8 +444,8 @@ impl<P: Package, VS: VersionSet> OfflineDependencyProvider<P, VS> {
 
     /// Lists dependencies of a given package and version.
     /// Returns [None] if no information is available regarding that package and version pair.
-    fn dependencies(&self, package: &P, version: &VS::V) -> Option<DependencyConstraints<P, VS>> {
-        self.dependencies.get(package)?.get(version).cloned()
+    fn dependencies(&self, package: &P, version: &VS::V) -> Option<&Map<P, VS>> {
+        self.dependencies.get(package)?.get(version)
     }
 }
 
@@ -389,16 +479,18 @@ impl<P: Package, VS: VersionSet> DependencyProvider for OfflineDependencyProvide
         )
     }
 
-    fn get_dependencies(
+    fn get_dependencies<DV: DependencyVisitor<Self::P, Self::VS, Self::M>>(
         &self,
         package: &P,
         version: &VS::V,
-    ) -> Result<Dependencies<P, VS, Self::M>, Infallible> {
-        Ok(match self.dependencies(package, version) {
-            None => {
-                Dependencies::Unavailable("its dependencies could not be determined".to_string())
-            }
-            Some(dependencies) => Dependencies::Available(dependencies),
-        })
+        dependency_adder: &mut DV,
+    ) -> Result<(), Infallible> {
+        match self.dependencies(package, version) {
+            None => dependency_adder
+                .make_unavailable_reason("its dependencies could not be determined".to_string()),
+            Some(dependencies) => dependency_adder
+                .add_iter_dependencies(dependencies.iter().map(|(d, vs)| (d.clone(), vs.clone()))),
+        };
+        Ok(())
     }
 }

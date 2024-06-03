@@ -16,7 +16,7 @@ use crate::internal::partial_solution::{DecisionLevel, PartialSolution};
 use crate::internal::small_vec::SmallVec;
 use crate::report::DerivationTree;
 use crate::solver::DependencyProvider;
-use crate::type_aliases::{DependencyConstraints, IncompDpId, Map};
+use crate::type_aliases::{IncompDpId, Map};
 use crate::version_set::VersionSet;
 
 /// Current state of the PubGrub algorithm.
@@ -80,27 +80,23 @@ impl<DP: DependencyProvider> State<DP> {
     }
 
     /// Add an incompatibility to the state.
-    pub fn add_incompatibility_from_dependencies(
+    pub fn add_incompatibility_from_dependency(
         &mut self,
         package: DP::P,
         version: DP::V,
-        deps: &DependencyConstraints<DP::P, DP::VS>,
-    ) -> std::ops::Range<IncompDpId<DP>> {
+        dependency: DP::P,
+        requerment: DP::VS,
+    ) -> IncompDpId<DP> {
         // Create incompatibilities and allocate them in the store.
-        let new_incompats_id_range =
-            self.incompatibility_store
-                .alloc_iter(deps.iter().map(|dep| {
-                    Incompatibility::from_dependency(
-                        package.clone(),
-                        <DP::VS as VersionSet>::singleton(version.clone()),
-                        dep,
-                    )
-                }));
-        // Merge the newly created incompatibilities with the older ones.
-        for id in IncompDpId::<DP>::range_to_iter(new_incompats_id_range.clone()) {
-            self.merge_incompatibility(id);
-        }
-        new_incompats_id_range
+        let id = self
+            .incompatibility_store
+            .alloc(Incompatibility::from_dependency(
+                package.clone(),
+                <DP::VS as VersionSet>::singleton(version.clone()),
+                (dependency, requerment),
+            ));
+        self.merge_incompatibility(id);
+        id
     }
 
     /// Unit propagation is the core mechanism of the solving algorithm.

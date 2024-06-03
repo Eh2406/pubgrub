@@ -2,7 +2,7 @@
 
 use pubgrub::error::PubGrubError;
 use pubgrub::package::Package;
-use pubgrub::solver::{Dependencies, DependencyProvider, OfflineDependencyProvider};
+use pubgrub::solver::{DependencyCollector, DependencyProvider, OfflineDependencyProvider};
 use pubgrub::type_aliases::{Map, SelectedDependencies};
 use pubgrub::version_set::VersionSet;
 use varisat::ExtendFormula;
@@ -65,10 +65,9 @@ impl<P: Package, VS: VersionSet> SatResolve<P, VS> {
 
         // active packages need each of there `deps` to be satisfied
         for (p, v, var) in &all_versions {
-            let deps = match dp.get_dependencies(p, v).unwrap() {
-                Dependencies::Unavailable(_) => panic!(),
-                Dependencies::Available(d) => d,
-            };
+            let mut dv = DependencyCollector::<OfflineDependencyProvider<P, VS>>::new();
+            dp.get_dependencies(p, v, &mut dv).unwrap();
+            let deps = dv.collect().unwrap();
             for (p1, range) in &deps {
                 let empty_vec = vec![];
                 let mut matches: Vec<varisat::Lit> = all_versions_by_p

@@ -59,11 +59,6 @@ impl<T> Id<T> {
             _ty: PhantomData,
         }
     }
-    pub fn range_to_iter(range: Range<Self>) -> impl Iterator<Item = Self> {
-        let start = range.start.raw;
-        let end = range.end.raw;
-        (start..end).map(Self::from)
-    }
 }
 
 /// Yet another index-based arena.
@@ -103,13 +98,12 @@ impl<T> Arena<T> {
         Id::from(raw as u32)
     }
 
-    pub fn alloc_iter<I: Iterator<Item = T>>(&mut self, values: I) -> Range<Id<T>> {
-        let start = Id::from(self.data.len() as u32);
-        values.for_each(|v| {
-            self.alloc(v);
-        });
-        let end = Id::from(self.data.len() as u32);
-        Range { start, end }
+    pub fn start_range(&self) -> std::ops::RangeFrom<Id<T>> {
+        Id::from(self.data.len() as u32)..
+    }
+
+    pub fn make_range(&self, start: std::ops::RangeFrom<Id<T>>) -> Range<Id<T>> {
+        start.start..Id::from(self.data.len() as u32)
     }
 }
 

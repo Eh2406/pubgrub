@@ -1,9 +1,13 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 
 use pubgrub::range::Range;
-use pubgrub::solver::{resolve, Dependencies, DependencyProvider, OfflineDependencyProvider};
+use pubgrub::solver::{
+    resolve, DependencyCollector, DependencyProvider, DependencyVisitor, OfflineDependencyProvider,
+};
+use pubgrub::type_aliases::Map;
 
 type NumVS = Range<u32>;
 
@@ -11,45 +15,44 @@ type NumVS = Range<u32>;
 // store queried dependencies in memory and check them before querying more from remote.
 struct CachingDependencyProvider<DP: DependencyProvider> {
     remote_dependencies: DP,
-    cached_dependencies: RefCell<OfflineDependencyProvider<DP::P, DP::VS>>,
+    #[allow(clippy::type_complexity)]
+    cached_dependencies: RefCell<Map<DP::P, BTreeMap<DP::V, DependencyCollector<DP>>>>,
 }
 
 impl<DP: DependencyProvider> CachingDependencyProvider<DP> {
     pub fn new(remote_dependencies_provider: DP) -> Self {
         CachingDependencyProvider {
             remote_dependencies: remote_dependencies_provider,
-            cached_dependencies: RefCell::new(OfflineDependencyProvider::new()),
+            cached_dependencies: RefCell::default(),
         }
     }
 }
 
 impl<DP: DependencyProvider<M = String>> DependencyProvider for CachingDependencyProvider<DP> {
     // Caches dependencies if they were already queried
-    fn get_dependencies(
+    fn get_dependencies<DV: DependencyVisitor<Self::P, Self::VS, Self::M>>(
         &self,
-        package: &DP::P,
-        version: &DP::V,
-    ) -> Result<Dependencies<DP::P, DP::VS, DP::M>, DP::Err> {
+        package: &Self::P,
+        version: &Self::V,
+        dependency_adder: &mut DV,
+    ) -> Result<(), Self::Err> {
         let mut cache = self.cached_dependencies.borrow_mut();
-        match cache.get_dependencies(package, version) {
-            Ok(Dependencies::Unavailable(_)) => {
-                let dependencies = self.remote_dependencies.get_dependencies(package, version);
-                match dependencies {
-                    Ok(Dependencies::Available(dependencies)) => {
-                        cache.add_dependencies(
-                            package.clone(),
-                            version.clone(),
-                            dependencies.clone(),
-                        );
-                        Ok(Dependencies::Available(dependencies))
-                    }
-                    Ok(Dependencies::Unavailable(reason)) => Ok(Dependencies::Unavailable(reason)),
-                    error @ Err(_) => error,
-                }
-            }
-            Ok(dependencies) => Ok(dependencies),
-            Err(_) => unreachable!(),
+        if let Some(deps) = cache.get(package).and_then(|s| s.get(version)) {
+            deps.replay(dependency_adder);
+            return Ok(());
         }
+        let mut dv = DependencyCollector::<DP>::new();
+        self.remote_dependencies
+            .get_dependencies(package, version, &mut dv)?;
+        dv.replay(dependency_adder);
+
+        cache
+            .entry(package.clone())
+            .or_default()
+            .entry(version.clone())
+            .or_insert(dv);
+
+        Ok(())
     }
 
     fn choose_version(&self, package: &DP::P, range: &DP::VS) -> Result<Option<DP::V>, DP::Err> {

@@ -10,7 +10,9 @@ use pubgrub::error::PubGrubError;
 use pubgrub::package::Package;
 use pubgrub::range::Range;
 use pubgrub::report::{DefaultStringReporter, DerivationTree, External, Reporter};
-use pubgrub::solver::{resolve, Dependencies, DependencyProvider, OfflineDependencyProvider};
+use pubgrub::solver::{
+    resolve, DependencyCollector, DependencyProvider, DependencyVisitor, OfflineDependencyProvider,
+};
 use pubgrub::type_aliases::SelectedDependencies;
 #[cfg(feature = "serde")]
 use pubgrub::version::SemanticVersion;
@@ -33,12 +35,13 @@ struct OldestVersionsDependencyProvider<P: Package, VS: VersionSet>(
 );
 
 impl<P: Package, VS: VersionSet> DependencyProvider for OldestVersionsDependencyProvider<P, VS> {
-    fn get_dependencies(
+    fn get_dependencies<DV: DependencyVisitor<Self::P, Self::VS, Self::M>>(
         &self,
-        p: &P,
-        v: &VS::V,
-    ) -> Result<Dependencies<P, VS, Self::M>, Infallible> {
-        self.0.get_dependencies(p, v)
+        p: &Self::P,
+        v: &Self::V,
+        dv: &mut DV,
+    ) -> Result<(), Self::Err> {
+        self.0.get_dependencies(p, v, dv)
     }
 
     fn choose_version(&self, package: &P, range: &VS) -> Result<Option<VS::V>, Infallible> {
@@ -86,14 +89,14 @@ impl<DP> TimeoutDependencyProvider<DP> {
 }
 
 impl<DP: DependencyProvider> DependencyProvider for TimeoutDependencyProvider<DP> {
-    fn get_dependencies(
+    fn get_dependencies<DV: DependencyVisitor<Self::P, Self::VS, Self::M>>(
         &self,
-        p: &DP::P,
-        v: &DP::V,
-    ) -> Result<Dependencies<DP::P, DP::VS, DP::M>, DP::Err> {
-        self.dp.get_dependencies(p, v)
+        p: &Self::P,
+        v: &Self::V,
+        dv: &mut DV,
+    ) -> Result<(), Self::Err> {
+        self.dp.get_dependencies(p, v, dv)
     }
-
     fn should_cancel(&self) -> Result<(), DP::Err> {
         assert!(self.start_time.elapsed().as_secs() < 60);
         let calls = self.call_count.get();
@@ -321,11 +324,13 @@ fn retain_versions<N: Package + Ord, VS: VersionSet>(
             if !retain(n, v) {
                 continue;
             }
-            let deps = match dependency_provider.get_dependencies(n, v).unwrap() {
-                Dependencies::Unavailable(_) => panic!(),
-                Dependencies::Available(deps) => deps,
-            };
-            smaller_dependency_provider.add_dependencies(n.clone(), v.clone(), deps)
+            let mut dv = DependencyCollector::<OfflineDependencyProvider<N, VS>>::new();
+            dependency_provider.get_dependencies(n, v, &mut dv).unwrap();
+            smaller_dependency_provider.add_dependencies(
+                n.clone(),
+                v.clone(),
+                dv.collect().unwrap(),
+            )
         }
     }
     smaller_dependency_provider
@@ -345,14 +350,12 @@ fn retain_dependencies<N: Package + Ord, VS: VersionSet>(
     let mut smaller_dependency_provider = OfflineDependencyProvider::new();
     for n in dependency_provider.packages() {
         for v in dependency_provider.versions(n).unwrap() {
-            let deps = match dependency_provider.get_dependencies(n, v).unwrap() {
-                Dependencies::Unavailable(_) => panic!(),
-                Dependencies::Available(deps) => deps,
-            };
+            let mut dv = DependencyCollector::<OfflineDependencyProvider<N, VS>>::new();
+            dependency_provider.get_dependencies(n, v, &mut dv).unwrap();
             smaller_dependency_provider.add_dependencies(
                 n.clone(),
                 v.clone(),
-                deps.iter().filter_map(|(dep, range)| {
+                dv.collect().unwrap().iter().filter_map(|(dep, range)| {
                     if !retain(n, v, dep) {
                         None
                     } else {
@@ -513,13 +516,9 @@ proptest! {
                 .versions(package)
                 .unwrap().collect();
             let version = version_idx.get(&versions);
-            let dependencies: Vec<(u16, NumVS)> = match dependency_provider
-                .get_dependencies(package, version)
-                .unwrap()
-            {
-                Dependencies::Unavailable(_) => panic!(),
-                Dependencies::Available(d) => d.into_iter().collect(),
-            };
+            let mut dv = DependencyCollector::<OfflineDependencyProvider<u16, Range<u32>>>::new();
+            dependency_provider.get_dependencies(package, version, &mut dv).unwrap();
+            let dependencies: Vec<(u16, NumVS)> = dv.collect().unwrap();
             if !dependencies.is_empty() {
                 to_remove.insert((package, **version, dep_idx.get(&dependencies).0));
             }
