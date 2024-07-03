@@ -352,6 +352,9 @@ impl<P: Package, VS: VersionSet, M: Eq + Clone + Debug + Display> fmt::Display
 // TESTS #######################################################################
 
 #[cfg(test)]
+mod incompatibility_taxonomy;
+
+#[cfg(test)]
 pub mod tests {
     use super::*;
     use crate::range::Range;

@@ -66,6 +66,16 @@ impl<T> Id<T> {
     }
 }
 
+#[cfg(test)]
+impl<T> Id<T> {
+    pub(crate) fn synthesize_test_value(n: u32) -> Self {
+        Self {
+            raw: n,
+            _ty: PhantomData,
+        }
+    }
+}
+
 /// Yet another index-based arena.
 ///
 /// An arena is a kind of simple grow-only allocator, backed by a `Vec`

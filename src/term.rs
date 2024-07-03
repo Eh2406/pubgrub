@@ -147,6 +147,7 @@ impl<VS: VersionSet> Term<VS> {
 ///
 /// As a shorthand, we say that a term v
 /// satisfies or contradicts a term t if {v} satisfies or contradicts it.
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Relation {
     /// We say that a set of terms S "satisfies" a term t
     /// if t must be true whenever every term in S is true.
