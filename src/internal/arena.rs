@@ -178,7 +178,7 @@ impl<T: Hash + Eq> Index<Id<T>> for HashArena<T> {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)] // TODO
 pub struct IdMap<K, V> {
     inner: Vec<Option<V>>,
     _ty: PhantomData<K>,
@@ -192,8 +192,23 @@ impl<K, V> IdMap<K, V> {
         }
     }
 
+    pub fn iter(&self) -> impl Iterator<Item = (Id<K>, &V)> {
+        self.inner
+            .iter()
+            .enumerate()
+            .filter_map(|(i, v)| v.as_ref().map(|v| (Id::from(i as u32), v)))
+    }
+
     pub fn get(&self, id: Id<K>) -> Option<&V> {
         self.inner.get(id.into_raw())?.as_ref()
+    }
+
+    pub fn get_mut(&mut self, id: Id<K>) -> Option<&mut V> {
+        self.inner.get_mut(id.into_raw())?.as_mut()
+    }
+
+    pub fn take(&mut self, id: Id<K>) -> Option<V> {
+        self.inner.get_mut(id.into_raw())?.take()
     }
 
     pub fn insert(&mut self, id: Id<K>, value: V) {
