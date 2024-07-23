@@ -5,6 +5,7 @@
 
 use std::fmt::{Debug, Display};
 use std::hash::BuildHasherDefault;
+use std::rc::Rc;
 
 use priority_queue::PriorityQueue;
 use rustc_hash::FxHasher;
@@ -111,7 +112,7 @@ pub struct DatedDerivation<P: Package, VS: VersionSet, M: Eq + Clone + Debug + D
     global_index: u32,
     decision_level: DecisionLevel,
     cause: IncompId<P, VS, M>,
-    accumulated_intersection: Term<VS>,
+    accumulated_intersection: Rc<Term<VS>>,
 }
 
 impl<P: Package, VS: VersionSet, M: Eq + Clone + Debug + Display> Display
@@ -124,8 +125,8 @@ impl<P: Package, VS: VersionSet, M: Eq + Clone + Debug + Display> Display
 
 #[derive(Clone, Debug)]
 enum AssignmentsIntersection<VS: VersionSet> {
-    Decision((u32, VS::V, Term<VS>)),
-    Derivations(Term<VS>),
+    Decision((u32, VS::V, Rc<Term<VS>>)),
+    Derivations(Rc<Term<VS>>),
 }
 
 impl<VS: VersionSet> Display for AssignmentsIntersection<VS> {
@@ -199,7 +200,7 @@ impl<DP: DependencyProvider> PartialSolution<DP> {
         pa.assignments_intersection = AssignmentsIntersection::Decision((
             self.next_global_index,
             version.clone(),
-            Term::exact(version),
+            Rc::new(Term::exact(version)),
         ));
         // Maintain that the beginning of the `package_assignments` Have all decisions in sorted order.
         if new_idx != old_idx {
@@ -220,7 +221,7 @@ impl<DP: DependencyProvider> PartialSolution<DP> {
             global_index: self.next_global_index,
             decision_level: self.current_decision_level,
             cause,
-            accumulated_intersection: store[cause].get(package).unwrap().negate(),
+            accumulated_intersection: Rc::new(store[cause].get(package).unwrap().negate()),
         };
         self.next_global_index += 1;
         let pa_last_index = self.package_assignments.len().saturating_sub(1);
@@ -235,7 +236,7 @@ impl<DP: DependencyProvider> PartialSolution<DP> {
                         panic!("add_derivation should not be called after a decision")
                     }
                     AssignmentsIntersection::Derivations(t) => {
-                        *t = t.intersection(&dated_derivation.accumulated_intersection);
+                        *t = Rc::new(t.intersection(&dated_derivation.accumulated_intersection));
                         dated_derivation.accumulated_intersection = t.clone();
                         if t.is_positive() {
                             // we can use `swap_indices` to make `changed_this_decision_level` only go down by 1
@@ -469,7 +470,7 @@ impl<DP: DependencyProvider> PartialSolution<DP> {
         } else {
             match &satisfier_pa.assignments_intersection {
                 AssignmentsIntersection::Derivations(_) => panic!("must be a decision"),
-                AssignmentsIntersection::Decision((_, _, term)) => term.clone(),
+                AssignmentsIntersection::Decision((_, _, term)) => (**term).clone(),
             }
         };
 
