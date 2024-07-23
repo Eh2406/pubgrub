@@ -11,10 +11,10 @@ use crate::internal::small_map::SmallMap;
 use crate::package::Package;
 use crate::report::{DerivationTree, Derived, External};
 use crate::term::{self, Term};
-use crate::type_aliases::{Map, Set};
+use crate::type_aliases::Set;
 use crate::version_set::VersionSet;
 
-use super::arena::HashArena;
+use super::arena::{HashArena, IdMap};
 
 /// An incompatibility is a set of terms for different packages
 /// that should never be satisfied all together.
@@ -264,7 +264,7 @@ impl<P: Package, VS: VersionSet, M: Eq + Clone + Debug + Display> Incompatibilit
         shared_ids: &Set<Id<Self>>,
         store: &Arena<Self>,
         package_store: &HashArena<P>,
-        precomputed: &Map<Id<Self>, Arc<DerivationTree<P, VS, M>>>,
+        precomputed: &IdMap<Self, Arc<DerivationTree<P, VS, M>>>,
     ) -> DerivationTree<P, VS, M> {
         match store[self_id].kind.clone() {
             Kind::DerivedFrom(id1, id2) => {
@@ -276,11 +276,11 @@ impl<P: Package, VS: VersionSet, M: Eq + Clone + Debug + Display> Incompatibilit
                         .collect(),
                     shared_id: shared_ids.get(&self_id).map(|id| id.into_raw()),
                     cause1: precomputed
-                        .get(&id1)
+                        .get(id1)
                         .expect("Non-topological calls building tree")
                         .clone(),
                     cause2: precomputed
-                        .get(&id2)
+                        .get(id2)
                         .expect("Non-topological calls building tree")
                         .clone(),
                 };
@@ -375,7 +375,7 @@ pub mod tests {
                 kind: Kind::<_, _, String>::FromDependencyOf(p2, Range::full(), p3, Range::full())
             });
 
-            let mut i3 = Map::default();
+            let mut i3 = crate::Map::default();
             i3.insert(p1, t1);
             i3.insert(p3, t3);
 
