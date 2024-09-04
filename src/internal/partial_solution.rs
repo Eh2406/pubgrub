@@ -375,7 +375,11 @@ impl<P: Package, V: Version> PartialSolution<P, V> {
 
         satisfied_map.insert(
             satisfier_package.clone(),
-            satisfier_pa.new_satisfier(satisfier_package, incompat_term, accum_term, store),
+            if accum_term.subset_of(incompat_term) {
+                (0, 0, DecisionLevel(1))
+            } else {
+                satisfier_pa.new_satisfier(satisfier_package, incompat_term, accum_term, store)
+            },
         );
 
         // Finally, let's identify the decision level of that previous satisfier.
@@ -556,6 +560,15 @@ impl<P: Package, V: Version> PartialSolution<P, V> {
         let incompat_term = incompat
             .get(satisfier_package)
             .expect("satisfier package not in incompat");
+
+        if accum_term.subset_of(incompat_term) {
+            satisfied_map.insert(satisfier_package.clone(), (0, 0, DecisionLevel(0)));
+            let (_, &(_, _, decision_level)) = satisfied_map
+                .iter()
+                .max_by_key(|(_p, (_, global_index, _))| global_index)
+                .unwrap();
+            return decision_level.max(DecisionLevel(1));
+        }
 
         for (idx, dated_derivation) in previous_derivations.iter().enumerate() {
             // Check if that incompat term is satisfied by our accumulated terms intersection.
