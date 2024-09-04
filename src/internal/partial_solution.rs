@@ -273,6 +273,12 @@ impl<P: Package, V: Version> PartialSolution<P, V> {
         let package = satisfier.package().clone();
         let mut accum_term = satisfier.as_term(store);
         let incompat_term = incompat.get(&package).expect("package not in satisfier");
+        if accum_term.subset_of(incompat_term) {
+            satisfier_map.insert(package.clone(), 0);
+            return previous_assignments[*satisfier_map.values().max().unwrap()]
+                .decision_level
+                .max(DecisionLevel(1));
+        }
         // Search previous satisfier.
         for (idx, dated_assignment) in previous_assignments.iter().enumerate() {
             if dated_assignment.assignment.package() != &package {
