@@ -56,7 +56,7 @@ enum AssignmentsIntersection<V: Version> {
     Derivations(Term<V>),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SatisfierSearch<P: Package, V: Version> {
     DifferentDecisionLevels {
         previous_satisfier_level: DecisionLevel,
@@ -280,13 +280,25 @@ impl<P: Package, V: Version> PartialSolution<P, V> {
         incompat: &Incompatibility<P, V>,
         store: &Arena<Incompatibility<P, V>>,
     ) -> (P, SatisfierSearch<P, V>) {
-        let satisfied_map = Self::find_satisfier(incompat, &self.package_assignments, store);
+        let n = self.new_satisfier_search(incompat, store);
+        let o = self.old_satisfier_search(incompat, store);
+        assert_eq!(n, o);
+        n
+    }
+
+    /// Figure out if the satisfier and previous satisfier are of different decision levels.
+    pub fn new_satisfier_search(
+        &self,
+        incompat: &Incompatibility<P, V>,
+        store: &Arena<Incompatibility<P, V>>,
+    ) -> (P, SatisfierSearch<P, V>) {
+        let satisfied_map = Self::new_find_satisfier(incompat, &self.package_assignments, store);
         let (satisfier_package, &(satisfier_index, _, satisfier_decision_level)) = satisfied_map
             .iter()
             .max_by_key(|(_p, (_, global_index, _))| global_index)
             .unwrap();
         let satisfier_package = satisfier_package.clone();
-        let previous_satisfier_level = Self::find_previous_satisfier(
+        let previous_satisfier_level = Self::new_find_previous_satisfier(
             incompat,
             &satisfier_package,
             satisfied_map,
@@ -317,7 +329,7 @@ impl<P: Package, V: Version> PartialSolution<P, V> {
     /// Question: This is possible since we added a "global_index" to every dated_derivation.
     /// It would be nice if we could get rid of it, but I don't know if then it will be possible
     /// to return a coherent previous_satisfier_level.
-    fn find_satisfier(
+    fn new_find_satisfier(
         incompat: &Incompatibility<P, V>,
         package_assignments: &Map<P, PackageAssignments<P, V>>,
         store: &Arena<Incompatibility<P, V>>,
@@ -327,7 +339,7 @@ impl<P: Package, V: Version> PartialSolution<P, V> {
             let pa = package_assignments.get(package).expect("Must exist");
             satisfied.insert(
                 package.clone(),
-                pa.satisfier(package, incompat_term, Term::any(), store),
+                pa.new_satisfier(package, incompat_term, Term::any(), store),
             );
         }
         satisfied
@@ -336,7 +348,7 @@ impl<P: Package, V: Version> PartialSolution<P, V> {
     /// Earliest assignment in the partial solution before satisfier
     /// such that incompatibility is satisfied by the partial solution up to
     /// and including that assignment plus satisfier.
-    fn find_previous_satisfier(
+    fn new_find_previous_satisfier(
         incompat: &Incompatibility<P, V>,
         satisfier_package: &P,
         mut satisfied_map: SmallMap<P, (usize, u32, DecisionLevel)>,
@@ -363,7 +375,7 @@ impl<P: Package, V: Version> PartialSolution<P, V> {
 
         satisfied_map.insert(
             satisfier_package.clone(),
-            satisfier_pa.satisfier(satisfier_package, incompat_term, accum_term, store),
+            satisfier_pa.new_satisfier(satisfier_package, incompat_term, accum_term, store),
         );
 
         // Finally, let's identify the decision level of that previous satisfier.
@@ -376,7 +388,7 @@ impl<P: Package, V: Version> PartialSolution<P, V> {
 }
 
 impl<P: Package, V: Version> PackageAssignments<P, V> {
-    fn satisfier(
+    fn new_satisfier(
         &self,
         package: &P,
         incompat_term: &Term<V>,
@@ -410,6 +422,168 @@ impl<P: Package, V: Version> PackageAssignments<P, V> {
                 panic!("This must be a decision")
             }
         }
+    }
+}
+
+impl<P: Package, V: Version> PartialSolution<P, V> {
+    /// Figure out if the satisfier and previous satisfier are of different decision levels.
+    pub fn old_satisfier_search(
+        &self,
+        incompat: &Incompatibility<P, V>,
+        store: &Arena<Incompatibility<P, V>>,
+    ) -> (P, SatisfierSearch<P, V>) {
+        let satisfied_map = Self::old_find_satisfier(incompat, &self.package_assignments, store);
+        let (satisfier_package, &(satisfier_index, _, satisfier_decision_level)) = satisfied_map
+            .iter()
+            .max_by_key(|(_p, (_, global_index, _))| global_index)
+            .unwrap();
+        let satisfier_package = satisfier_package.clone();
+        let previous_satisfier_level = Self::old_find_previous_satisfier(
+            incompat,
+            &satisfier_package,
+            satisfied_map,
+            &self.package_assignments,
+            store,
+        );
+        if previous_satisfier_level < satisfier_decision_level {
+            let search_result = SatisfierSearch::DifferentDecisionLevels {
+                previous_satisfier_level,
+            };
+            (satisfier_package, search_result)
+        } else {
+            let satisfier_pa = self.package_assignments.get(&satisfier_package).unwrap();
+            let dd = &satisfier_pa.dated_derivations[satisfier_index];
+            let search_result = SatisfierSearch::SameDecisionLevels {
+                satisfier_cause: dd.cause,
+            };
+            (satisfier_package, search_result)
+        }
+    }
+
+    /// A satisfier is the earliest assignment in partial solution such that the incompatibility
+    /// is satisfied by the partial solution up to and including that assignment.
+    ///
+    /// Returns a map indicating for each package term, when that was first satisfied in history.
+    /// If we effectively found a satisfier, the returned map must be the same size that incompat.
+    ///
+    /// Question: This is possible since we added a "global_index" to every dated_derivation.
+    /// It would be nice if we could get rid of it, but I don't know if then it will be possible
+    /// to return a coherent previous_satisfier_level.
+    fn old_find_satisfier(
+        incompat: &Incompatibility<P, V>,
+        package_assignments: &Map<P, PackageAssignments<P, V>>,
+        store: &Arena<Incompatibility<P, V>>,
+    ) -> SmallMap<P, (usize, u32, DecisionLevel)> {
+        let mut satisfied = SmallMap::Empty;
+        for (package, incompat_term) in incompat.iter() {
+            let pa = package_assignments.get(package).expect("Must exist");
+            // Term where we accumulate intersections until incompat_term is satisfied.
+            let mut accum_term = Term::any();
+            // Indicate if we found a satisfier in the list of derivations, otherwise it will be the decision.
+            let mut derivation_satisfier_index = None;
+            for (idx, dated_derivation) in pa.dated_derivations.iter().enumerate() {
+                let this_term = store[dated_derivation.cause].get(package).unwrap().negate();
+                accum_term = accum_term.intersection(&this_term);
+                if accum_term.subset_of(incompat_term) {
+                    // We found the derivation causing satisfaction.
+                    derivation_satisfier_index = Some((
+                        idx,
+                        dated_derivation.global_index,
+                        dated_derivation.decision_level,
+                    ));
+                    break;
+                }
+            }
+            match derivation_satisfier_index {
+                Some(indices) => {
+                    satisfied.insert(package.clone(), indices);
+                }
+                // If it wasn't found in the derivations,
+                // it must be the decision which is last (if called in the right context).
+                None => match pa.assignments_intersection {
+                    AssignmentsIntersection::Decision((global_index, _, _)) => {
+                        satisfied.insert(
+                            package.clone(),
+                            (
+                                pa.dated_derivations.len(),
+                                global_index,
+                                pa.highest_decision_level,
+                            ),
+                        );
+                    }
+                    AssignmentsIntersection::Derivations(_) => {
+                        panic!("This must be a decision")
+                    }
+                },
+            };
+        }
+        satisfied
+    }
+
+    /// Earliest assignment in the partial solution before satisfier
+    /// such that incompatibility is satisfied by the partial solution up to
+    /// and including that assignment plus satisfier.
+    fn old_find_previous_satisfier(
+        incompat: &Incompatibility<P, V>,
+        satisfier_package: &P,
+        mut satisfied_map: SmallMap<P, (usize, u32, DecisionLevel)>,
+        package_assignments: &Map<P, PackageAssignments<P, V>>,
+        store: &Arena<Incompatibility<P, V>>,
+    ) -> DecisionLevel {
+        // First, let's retrieve the previous derivations and the initial accum_term.
+        let satisfier_pa = package_assignments.get(satisfier_package).unwrap();
+        let (satisfier_index, ref mut _satisfier_global_idx, ref mut _satisfier_decision_level) =
+            satisfied_map.get_mut(satisfier_package).unwrap();
+        // *satisfier_global_idx = 0; // Changes behavior
+        // *satisfier_decision_level = DecisionLevel(0); // Changes behavior
+
+        let (previous_derivations, mut accum_term) =
+            if *satisfier_index == satisfier_pa.dated_derivations.len() {
+                match &satisfier_pa.assignments_intersection {
+                    AssignmentsIntersection::Derivations(_) => panic!("must be a decision"),
+                    AssignmentsIntersection::Decision((_, _, term)) => {
+                        (satisfier_pa.dated_derivations.as_slice(), term.clone())
+                    }
+                }
+            } else {
+                let dd = &satisfier_pa.dated_derivations[*satisfier_index];
+                (
+                    &satisfier_pa.dated_derivations[..=*satisfier_index], // [..satisfier_idx] to change behavior
+                    store[dd.cause].get(satisfier_package).unwrap().negate(),
+                )
+            };
+
+        let incompat_term = incompat
+            .get(satisfier_package)
+            .expect("satisfier package not in incompat");
+
+        for (idx, dated_derivation) in previous_derivations.iter().enumerate() {
+            // Check if that incompat term is satisfied by our accumulated terms intersection.
+            let this_term = store[dated_derivation.cause]
+                .get(satisfier_package)
+                .unwrap()
+                .negate();
+            accum_term = accum_term.intersection(&this_term);
+            // Check if we have found the satisfier
+            if accum_term.subset_of(incompat_term) {
+                satisfied_map.insert(
+                    satisfier_package.clone(),
+                    (
+                        idx,
+                        dated_derivation.global_index,
+                        dated_derivation.decision_level,
+                    ),
+                );
+                break;
+            }
+        }
+
+        // Finally, let's identify the decision level of that previous satisfier.
+        let (_, &(_, _, decision_level)) = satisfied_map
+            .iter()
+            .max_by_key(|(_p, (_, global_index, _))| global_index)
+            .unwrap();
+        decision_level.max(DecisionLevel(1))
     }
 }
 
