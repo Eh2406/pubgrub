@@ -47,7 +47,7 @@ pub(crate) struct PartialSolution<DP: DependencyProvider> {
     prioritized_potential_packages:
         PriorityQueue<DP::P, DP::Priority, BuildHasherDefault<FxHasher>>,
     changed_this_decision_level: usize,
-    has_ever_backtracked: bool,
+    pub(crate) has_ever_backtracked: bool,
 }
 
 impl<DP: DependencyProvider> Display for PartialSolution<DP> {

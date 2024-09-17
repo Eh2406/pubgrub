@@ -93,9 +93,10 @@ pub fn resolve<DP: DependencyProvider>(
             state.partial_solution
         );
 
+        let back = state.partial_solution.has_ever_backtracked;
         let Some(highest_priority_pkg) = state
             .partial_solution
-            .pick_highest_priority_pkg(|p, r| dependency_provider.prioritize(p, r))
+            .pick_highest_priority_pkg(|p, r| dependency_provider.prioritize(p, r, back))
         else {
             return Ok(state.partial_solution.extract_solution());
         };
@@ -240,7 +241,7 @@ pub trait DependencyProvider {
     ///
     /// Note: the resolver may call this even when the range has not changed,
     /// if it is more efficient for the resolvers internal data structures.
-    fn prioritize(&self, package: &Self::P, range: &Self::VS) -> Self::Priority;
+    fn prioritize(&self, package: &Self::P, range: &Self::VS, back: bool) -> Self::Priority;
     /// The type returned from `prioritize`. The resolver does not care what type this is
     /// as long as it can pick a largest one and clone it.
     ///
@@ -369,13 +370,15 @@ impl<P: Package, VS: VersionSet> DependencyProvider for OfflineDependencyProvide
     }
 
     type Priority = Reverse<usize>;
-    fn prioritize(&self, package: &P, range: &VS) -> Self::Priority {
-        Reverse(
+    fn prioritize(&self, package: &P, range: &VS, back: bool) -> Self::Priority {
+        Reverse(if !back {
+            0
+        } else {
             self.dependencies
                 .get(package)
                 .map(|versions| versions.keys().filter(|v| range.contains(v)).count())
-                .unwrap_or(0),
-        )
+                .unwrap_or(0)
+        })
     }
 
     fn get_dependencies(
