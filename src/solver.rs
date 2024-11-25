@@ -158,6 +158,15 @@ pub fn resolve<DP: DependencyProvider>(
                     source: err,
                 })?;
 
+            let constraints = dependency_provider
+                .get_constraints(&state.package_store[p], &v)
+                .map_err(|err| PubGrubError::ErrorRetrievingDependencies {
+                    // TODO!
+                    package: state.package_store[p].clone(),
+                    version: v.clone(),
+                    source: err,
+                })?;
+
             let dependencies = match dependencies {
                 Dependencies::Unavailable(reason) => {
                     state.add_incompatibility(Incompatibility::custom_version(
@@ -170,9 +179,27 @@ pub fn resolve<DP: DependencyProvider>(
                 Dependencies::Available(x) => x,
             };
 
+            let constraints = match constraints {
+                Dependencies::Unavailable(reason) => {
+                    state.add_incompatibility(Incompatibility::custom_version(
+                        p,
+                        v.clone(),
+                        reason,
+                    ));
+                    continue;
+                }
+                Dependencies::Available(x) => x,
+            };
+
             // Add that package and version if the dependencies are not problematic.
-            let dep_incompats =
-                state.add_incompatibility_from_dependencies(p, v.clone(), dependencies);
+            let dep_incompats = state.add_incompatibility_from_dependencies(
+                p,
+                v.clone(),
+                dependencies
+                    .into_iter()
+                    .map(|(p, vs)| (true, p, vs))
+                    .chain(constraints.into_iter().map(|(p, vs)| (false, p, vs))),
+            );
 
             state
                 .partial_solution
@@ -284,6 +311,17 @@ pub trait DependencyProvider {
         package: &Self::P,
         version: &Self::V,
     ) -> Result<Dependencies<Self::P, Self::VS, Self::M>, Self::Err>;
+
+    /// Retrieves the package constraints.
+    /// Return [Dependencies::Unavailable] if its dependencies are unavailable.
+    #[allow(clippy::type_complexity)]
+    fn get_constraints(
+        &self,
+        package: &Self::P,
+        version: &Self::V,
+    ) -> Result<Dependencies<Self::P, Self::VS, Self::M>, Self::Err> {
+        Ok(Dependencies::Available(DependencyConstraints::default()))
+    }
 
     /// This is called fairly regularly during the resolution,
     /// if it returns an Err then resolution will be terminated.

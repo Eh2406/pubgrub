@@ -62,6 +62,8 @@ enum Kind<P: Package, VS: VersionSet, M: Eq + Clone + Debug + Display> {
     /// We can merge multiple dependents with the same version. For example, if a@1 depends on b and
     /// a@2 depends on b, we can say instead a@1||2 depends on b.
     FromDependencyOf(Id<P>, VS, Id<P>, VS),
+    /// TODO
+    FromConstraintsOf(Id<P>, VS, Id<P>, VS),
     /// Derived from two causes. Stores cause ids.
     ///
     /// For example, if a -> b and b -> c, we can derive a -> c.
@@ -151,6 +153,18 @@ impl<P: Package, VS: VersionSet, M: Eq + Clone + Debug + Display> Incompatibilit
                 ])
             },
             kind: Kind::FromDependencyOf(package, versions, p2, set2),
+        }
+    }
+
+    /// Build an incompatibility from a given constraints.
+    pub(crate) fn from_constraints(package: Id<P>, versions: VS, dep: (Id<P>, VS)) -> Self {
+        let (p2, set2) = dep;
+        Self {
+            package_terms: SmallMap::Two([
+                (package, Term::Positive(versions.clone())),
+                (p2, Term::Positive(set2.complement())),
+            ]),
+            kind: Kind::FromDependencyOf(package, versions, p2, set2), // TODO!
         }
     }
 
@@ -296,6 +310,15 @@ impl<P: Package, VS: VersionSet, M: Eq + Clone + Debug + Display> Incompatibilit
                 set.clone(),
             )),
             Kind::FromDependencyOf(package, set, dep_package, dep_set) => {
+                DerivationTree::External(External::FromDependencyOf(
+                    package_store[package].clone(),
+                    set.clone(),
+                    package_store[dep_package].clone(),
+                    dep_set.clone(),
+                ))
+            }
+            Kind::FromConstraintsOf(package, set, dep_package, dep_set) => {
+                // TODO
                 DerivationTree::External(External::FromDependencyOf(
                     package_store[package].clone(),
                     set.clone(),

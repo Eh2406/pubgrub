@@ -84,19 +84,27 @@ impl<DP: DependencyProvider> State<DP> {
         &mut self,
         package: Id<DP::P>,
         version: DP::V,
-        deps: impl IntoIterator<Item = (DP::P, DP::VS)>,
+        deps: impl IntoIterator<Item = (bool, DP::P, DP::VS)>,
     ) -> std::ops::Range<IncompDpId<DP>> {
         // Create incompatibilities and allocate them in the store.
-        let new_incompats_id_range =
-            self.incompatibility_store
-                .alloc_iter(deps.into_iter().map(|(dep_p, dep_vs)| {
-                    let dep_pid = self.package_store.alloc(dep_p);
+        let new_incompats_id_range = self.incompatibility_store.alloc_iter(deps.into_iter().map(
+            |(is_dep, dep_p, dep_vs)| {
+                let dep_pid = self.package_store.alloc(dep_p);
+                if is_dep {
                     Incompatibility::from_dependency(
                         package,
                         <DP::VS as VersionSet>::singleton(version.clone()),
                         (dep_pid, dep_vs),
                     )
-                }));
+                } else {
+                    Incompatibility::from_constraints(
+                        package,
+                        <DP::VS as VersionSet>::singleton(version.clone()),
+                        (dep_pid, dep_vs),
+                    )
+                }
+            },
+        ));
         // Merge the newly created incompatibilities with the older ones.
         for id in IncompDpId::<DP>::range_to_iter(new_incompats_id_range.clone()) {
             self.merge_incompatibility(id);
