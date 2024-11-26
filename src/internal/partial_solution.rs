@@ -227,13 +227,11 @@ impl<DP: DependencyProvider> PartialSolution<DP> {
             accumulated_intersection: store[cause].get(package).unwrap().negate(),
         };
         self.next_global_index += 1;
-        let pa_last_index = self.package_assignments.len().saturating_sub(1);
         match self.package_assignments.entry(package) {
             Entry::Occupied(mut occupied) => {
                 let idx = occupied.index();
-                let pa = occupied.get_mut();
-                pa.highest_decision_level = self.current_decision_level;
-                match &mut pa.assignments_intersection {
+                occupied.get_mut().highest_decision_level = self.current_decision_level;
+                match &mut occupied.get_mut().assignments_intersection {
                     // Check that add_derivation is never called in the wrong context.
                     AssignmentsIntersection::Decision(_) => {
                         panic!("add_derivation should not be called after a decision")
@@ -241,22 +239,21 @@ impl<DP: DependencyProvider> PartialSolution<DP> {
                     AssignmentsIntersection::Derivations(t) => {
                         *t = t.intersection(&dated_derivation.accumulated_intersection);
                         dated_derivation.accumulated_intersection = t.clone();
-                        if t.is_positive() {
-                            // we can use `swap_indices` to make `changed_this_decision_level` only go down by 1
-                            // but the copying is slower then the larger search
-                            self.changed_this_decision_level =
-                                std::cmp::min(self.changed_this_decision_level, idx);
-                        }
                     }
+                };
+                let is_positive = dated_derivation.accumulated_intersection.is_positive();
+                occupied.get_mut().dated_derivations.push(dated_derivation);
+                if is_positive && idx < self.changed_this_decision_level {
+                    // Use `swap_indices` to make `changed_this_decision_level` only go down by 1
+                    self.changed_this_decision_level -= 1;
+                    occupied.swap_indices(self.changed_this_decision_level);
                 }
-                pa.dated_derivations.push(dated_derivation);
             }
             Entry::Vacant(v) => {
                 let term = dated_derivation.accumulated_intersection.clone();
-                if term.is_positive() {
-                    self.changed_this_decision_level =
-                        std::cmp::min(self.changed_this_decision_level, pa_last_index);
-                }
+                // The invariant that "`changed_this_decision_level` is smaller then all modified indexes" is maintained automatically.
+                // Because the entry is vacant the new index is larger than any previous index,
+                // and therefore larger than `changed_this_decision_level`.
                 v.insert(PackageAssignments {
                     smallest_decision_level: self.current_decision_level,
                     highest_decision_level: self.current_decision_level,
@@ -272,21 +269,11 @@ impl<DP: DependencyProvider> PartialSolution<DP> {
         &mut self,
         prioritizer: impl Fn(Id<DP::P>, &DP::VS) -> DP::Priority,
     ) -> Option<Id<DP::P>> {
-        let check_all = self.changed_this_decision_level
-            == self.current_decision_level.0.saturating_sub(1) as usize;
-        let current_decision_level = self.current_decision_level;
         let prioritized_potential_packages = &mut self.prioritized_potential_packages;
         self.package_assignments
             .get_range(self.changed_this_decision_level..)
             .unwrap()
             .iter()
-            .filter(|(_, pa)| {
-                // We only actually need to update the package if it has been changed
-                // since the last time we called prioritize.
-                // Which means it's highest decision level is the current decision level,
-                // or if we backtracked in the meantime.
-                check_all || pa.highest_decision_level == current_decision_level
-            })
             .filter_map(|(&p, pa)| pa.assignments_intersection.potential_package_filter(p))
             .for_each(|(p, r)| {
                 let priority = prioritizer(p, r);
@@ -314,9 +301,13 @@ impl<DP: DependencyProvider> PartialSolution<DP> {
     /// Backtrack the partial solution to a given decision level.
     pub(crate) fn backtrack(&mut self, decision_level: DecisionLevel) {
         self.current_decision_level = decision_level;
-        self.package_assignments.retain(|_, pa| {
+        let mut first_changed_package = None;
+        self.package_assignments.retain(|pid, pa| {
             if pa.smallest_decision_level > decision_level {
                 // Remove all entries that have a smallest decision level higher than the backtrack target.
+                if pa.assignments_intersection.term().is_positive() {
+                    self.prioritized_potential_packages.remove(pid);
+                }
                 false
             } else if pa.highest_decision_level <= decision_level {
                 // Do not change entries older than the backtrack decision level target.
@@ -328,6 +319,8 @@ impl<DP: DependencyProvider> PartialSolution<DP> {
                 // We can be certain that there will be no decision in this package assignments
                 // after backtracking, because such decision would have been the last
                 // assignment and it would have the "highest_decision_level".
+
+                let was_positive = pa.assignments_intersection.term().is_positive();
 
                 // Truncate the history.
                 while pa.dated_derivations.last().map(|dd| dd.decision_level) > Some(decision_level)
@@ -344,12 +337,22 @@ impl<DP: DependencyProvider> PartialSolution<DP> {
                 // Reset the assignments intersection.
                 pa.assignments_intersection =
                     AssignmentsIntersection::Derivations(last.accumulated_intersection.clone());
+                first_changed_package.get_or_insert(*pid);
+                if was_positive && !pa.assignments_intersection.term().is_positive() {
+                    self.prioritized_potential_packages.remove(pid);
+                }
                 true
             }
         });
-        // Throw away all stored priority levels, And mark that they all need to be recomputed.
-        self.prioritized_potential_packages.clear();
-        self.changed_this_decision_level = self.current_decision_level.0.saturating_sub(1) as usize;
+        // Mark stored priority levels that need to be recomputed.
+        self.changed_this_decision_level = self
+            .package_assignments
+            .get_index_of(
+                &first_changed_package
+                    .expect("Backtracked to a Decisionlevel where there was nothing to resolve."),
+            )
+            .unwrap();
+
         self.has_ever_backtracked = true;
     }
 
