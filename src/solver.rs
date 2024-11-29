@@ -79,6 +79,7 @@ pub fn resolve<DP: DependencyProvider>(
     let mut state: State<DP> = State::init(package.clone(), version.into());
     let mut added_dependencies: Map<Id<DP::P>, Set<DP::V>> = Map::default();
     let mut next = state.root_package;
+    let max_priority = dependency_provider.stop_if_priority_higher_then();
     loop {
         dependency_provider
             .should_cancel()
@@ -95,11 +96,10 @@ pub fn resolve<DP: DependencyProvider>(
             state.partial_solution.display(&state.package_store)
         );
 
-        let Some(highest_priority_pkg) =
-            state.partial_solution.pick_highest_priority_pkg(|p, r| {
-                dependency_provider.prioritize(&state.package_store[p], r)
-            })
-        else {
+        let Some(highest_priority_pkg) = state.partial_solution.pick_highest_priority_pkg(
+            |p, r| dependency_provider.prioritize(&state.package_store[p], r),
+            &max_priority,
+        ) else {
             return Ok(state
                 .partial_solution
                 .extract_solution()
@@ -261,6 +261,10 @@ pub trait DependencyProvider {
     /// [`Reverse`](std::cmp::Reverse) can be useful if you want to pick the package with
     /// the fewest versions that match the outstanding constraint.
     type Priority: Ord + Clone;
+
+    fn stop_if_priority_higher_then(&self) -> Option<Self::Priority> {
+        None
+    }
 
     /// The kind of error returned from these methods.
     ///
