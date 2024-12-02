@@ -264,13 +264,12 @@ impl<DP: DependencyProvider> PartialSolution<DP> {
     ) -> Option<Id<DP::P>> {
         let prioritized_potential_packages = &mut self.prioritized_potential_packages;
         while let Some(p) = self.unprioritized_potential_packages.pop() {
-            let r = self
-                .package_assignments
-                .get(&p)
-                .unwrap()
-                .assignments_intersection
-                .potential_package_filter()
-                .unwrap();
+            let Some(pa) = self.package_assignments.get(&p) else {
+                continue;
+            };
+            let Some(r) = pa.assignments_intersection.potential_package_filter() else {
+                continue;
+            };
             let priority = prioritizer(p, r);
             let mut stop_erly = false;
             if let Some(max_priority) = max_priority.as_ref() {
@@ -283,7 +282,22 @@ impl<DP: DependencyProvider> PartialSolution<DP> {
                 break;
             }
         }
-        prioritized_potential_packages.pop().map(|(p, _)| p)
+        loop {
+            let (p, _) = prioritized_potential_packages.pop()?;
+            if self.has_ever_backtracked {
+                let Some(pa) = self.package_assignments.get(&p) else {
+                    continue;
+                };
+                if pa
+                    .assignments_intersection
+                    .potential_package_filter()
+                    .is_none()
+                {
+                    continue;
+                };
+            }
+            return Some(p);
+        }
     }
 
     /// If a partial solution has, for every positive derivation,
@@ -305,10 +319,6 @@ impl<DP: DependencyProvider> PartialSolution<DP> {
     pub(crate) fn backtrack(&mut self, decision_level: DecisionLevel) {
         self.current_decision_level = decision_level;
 
-        // Throw away all stored priority levels, And mark that they all need to be recomputed.
-        self.prioritized_potential_packages.clear();
-        self.unprioritized_potential_packages.clear();
-
         self.package_assignments.retain(|p, pa| {
             if pa.smallest_decision_level > decision_level {
                 // Remove all entries that have a smallest decision level higher than the backtrack target.
@@ -319,6 +329,7 @@ impl<DP: DependencyProvider> PartialSolution<DP> {
                     .assignments_intersection
                     .potential_package_filter()
                     .is_some()
+                    && self.prioritized_potential_packages.get(p).is_none()
                 {
                     self.unprioritized_potential_packages.insert(*p);
                 }
@@ -347,6 +358,7 @@ impl<DP: DependencyProvider> PartialSolution<DP> {
                 pa.assignments_intersection =
                     AssignmentsIntersection::Derivations(last.accumulated_intersection.clone());
 
+                self.prioritized_potential_packages.remove(p);
                 if pa.assignments_intersection.term().is_positive() {
                     self.unprioritized_potential_packages.insert(*p);
                 }
