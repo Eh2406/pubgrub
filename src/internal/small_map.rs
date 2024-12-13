@@ -154,17 +154,17 @@ impl<K: Clone + PartialEq + Eq + Hash, V: Clone> SmallMap<K, V> {
     /// otherwise add the content of the `Some(_)`.
     pub(crate) fn merge<'a>(
         &'a mut self,
-        map_2: impl Iterator<Item = (&'a K, &'a V)>,
+        map_2: impl Iterator<Item = (K, &'a V)>,
         f: impl Fn(&V, &V) -> Option<V>,
     ) {
         for (key, val_2) in map_2 {
-            match self.get_mut(key) {
+            match self.get_mut(&key) {
                 None => {
-                    self.insert(key.clone(), val_2.clone());
+                    self.insert(key, val_2.clone());
                 }
                 Some(val_1) => match f(val_1, val_2) {
                     None => {
-                        self.remove(key);
+                        self.remove(&key);
                     }
                     Some(merged_value) => *val_1 = merged_value,
                 },
@@ -179,18 +179,7 @@ impl<K, V> Default for SmallMap<K, V> {
     }
 }
 
-impl<K, V> SmallMap<K, V> {
-    pub(crate) fn len(&self) -> usize {
-        match self {
-            Self::Empty => 0,
-            Self::One(_) => 1,
-            Self::Two(_) => 2,
-            Self::Flexible(data) => data.len(),
-        }
-    }
-}
-
-enum IterSmallMap<'a, K, V> {
+pub(crate) enum IterSmallMap<'a, K, V> {
     Inline(std::slice::Iter<'a, (K, V)>),
     Map(std::collections::hash_map::Iter<'a, K, V>),
 }
@@ -204,10 +193,19 @@ impl<'a, K: 'a, V: 'a> Iterator for IterSmallMap<'a, K, V> {
             IterSmallMap::Map(inner) => inner.next(),
         }
     }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        match self {
+            IterSmallMap::Inline(inner) => inner.size_hint(),
+            IterSmallMap::Map(inner) => inner.size_hint(),
+        }
+    }
 }
 
+impl<'a, K: 'a, V: 'a> ExactSizeIterator for IterSmallMap<'a, K, V> {}
+
 impl<K, V> SmallMap<K, V> {
-    pub(crate) fn iter(&self) -> impl Iterator<Item = (&K, &V)> {
+    pub(crate) fn iter(&self) -> IterSmallMap<K, V> {
         match self {
             Self::Empty => IterSmallMap::Inline([].iter()),
             Self::One(data) => IterSmallMap::Inline(data.iter()),
