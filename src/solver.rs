@@ -228,8 +228,12 @@ pub fn resolve<DP: DependencyProvider>(
             };
 
             // Add that package and version if the dependencies are not problematic.
-            let dep_incompats =
-                state.add_incompatibility_from_dependencies(p, v.clone(), dependencies);
+            let dep_incompats = state.add_incompatibility_from_dependencies(
+                p,
+                v.clone(),
+                dependencies,
+                &|package, range| dependency_provider.simplify(package, range),
+            );
 
             if let Some(conflict) = state.partial_solution.add_version(
                 p,
@@ -365,6 +369,10 @@ pub trait DependencyProvider {
         package: &Self::P,
         version: &Self::V,
     ) -> Result<Dependencies<Self::P, Self::VS, Self::M>, Self::Err>;
+
+    fn simplify(&self, package: &Self::P, range: Self::VS) -> Self::VS {
+        range
+    }
 
     /// This is called fairly regularly during the resolution,
     /// if it returns an Err then resolution will be terminated.

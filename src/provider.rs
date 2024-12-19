@@ -128,4 +128,13 @@ impl<P: Package, VS: VersionSet> DependencyProvider for OfflineDependencyProvide
             Some(dependencies) => Dependencies::Available(dependencies),
         })
     }
+
+    fn simplify(&self, package: &P, range: VS) -> VS {
+        range.simplify(
+            self.dependencies
+                .get(package)
+                .into_iter()
+                .flat_map(|x| x.keys()),
+        )
+    }
 }

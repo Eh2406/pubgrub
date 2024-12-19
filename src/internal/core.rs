@@ -86,6 +86,7 @@ impl<DP: DependencyProvider> State<DP> {
         package: Id<DP::P>,
         version: DP::V,
         deps: impl IntoIterator<Item = (DP::P, DP::VS)>,
+        simplify: &impl Fn(&DP::P, DP::VS) -> DP::VS,
     ) -> std::ops::Range<IncompDpId<DP>> {
         // Create incompatibilities and allocate them in the store.
         let new_incompats_id_range =
@@ -100,7 +101,7 @@ impl<DP: DependencyProvider> State<DP> {
                 }));
         // Merge the newly created incompatibilities with the older ones.
         for id in IncompDpId::<DP>::range_to_iter(new_incompats_id_range.clone()) {
-            self.merge_incompatibility(id);
+            self.merge_dependency(id, simplify);
         }
         new_incompats_id_range
     }
@@ -303,13 +304,19 @@ impl<DP: DependencyProvider> State<DP> {
     /// (provided that no other version of foo exists between 1.0.0 and 2.0.0).
     /// We could collapse them into { foo (1.0.0 ∪ 1.1.0), not bar ^1.0.0 }
     /// without having to check the existence of other versions though.
-    fn merge_incompatibility(&mut self, mut id: IncompDpId<DP>) {
+    fn merge_dependency(
+        &mut self,
+        mut id: IncompDpId<DP>,
+        simplify: impl Fn(&DP::P, DP::VS) -> DP::VS,
+    ) {
         if let Some((p1, p2)) = self.incompatibility_store[id].as_dependency() {
             // If we are a dependency, there's a good chance we can be merged with a previous dependency
             let deps_lookup = self.merged_dependencies.entry((p1, p2)).or_default();
             if let Some((past, merged)) = deps_lookup.as_mut_slice().iter_mut().find_map(|past| {
                 self.incompatibility_store[id]
-                    .merge_dependents(&self.incompatibility_store[*past])
+                    .merge_dependency(&self.incompatibility_store[*past], |p, vs| {
+                        simplify(&self.package_store[p], vs)
+                    })
                     .map(|m| (past, m))
             }) {
                 let new = self.incompatibility_store.alloc(merged);
@@ -325,6 +332,9 @@ impl<DP: DependencyProvider> State<DP> {
                 deps_lookup.push(id);
             }
         }
+        self.merge_incompatibility(id)
+    }
+    fn merge_incompatibility(&mut self, id: IncompDpId<DP>) {
         for (pkg, term) in self.incompatibility_store[id].iter() {
             if cfg!(debug_assertions) {
                 assert_ne!(term, &crate::term::Term::any());
